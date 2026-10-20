@@ -77,48 +77,6 @@ async function makeZipBuffer(
 
 // ---------------------------- fixture buffers ------------------------------
 
-describe("TCP/UDP artifact ownership", () => {
-  it("persists files, commands, and derived fingerprints on their own transport", async () => {
-    const tcp = makeNmapXml([{ port: 53, proto: "tcp", service: "domain" }]);
-    const udp = makeNmapXml([{ port: 53, proto: "udp", service: "domain" }]);
-    const result = await importAutoRecon(await makeZipBuffer({
-      "scans/xml/_full_tcp_nmap.xml": tcp,
-      "scans/xml/_top_20_udp_nmap.xml": udp,
-      "scans/tcp53/tcp-evidence.txt": "TCP_ONLY WordPress",
-      "scans/udp53/udp-evidence.txt": "UDP_ONLY Drupal",
-      "scans/_manual_commands.txt": makeManualCommands([
-        { service: "domain", proto: "tcp", port: 53, tools: [{ name: "tcp-command", cmd: "dig +tcp @10.10.10.5 example.test" }] },
-        { service: "domain", proto: "udp", port: 53, tools: [{ name: "udp-command", cmd: "dig @10.10.10.5 example.test" }] },
-      ]),
-      "other/scans/xml/_full_tcp_nmap.xml": tcp.replaceAll("10.10.10.5", "10.10.10.6"),
-    }), "transports.zip");
-    const db = createTestDb();
-    const { id } = createFromScan(db, result.scan, "transports.zip", result);
-    const engagement = getById(db, id)!;
-    const primary = engagement.hosts.find((h) => h.is_primary)!;
-    for (const [protocol, marker, tech] of [["tcp", "TCP_ONLY WordPress", "wordpress"], ["udp", "UDP_ONLY Drupal", "drupal"]]) {
-      const port = engagement.ports.find((p) => p.host_id === primary.id && p.protocol === protocol)!;
-      expect(port.scripts.filter((s) => s.source === "autorecon").map((s) => s.output)).toEqual([marker]);
-      expect(port.commands.map((c) => c.label)).toEqual([`${protocol}-command`]);
-      expect(listForPort(db, port.id, "autorecon").map((f) => f.value)).toEqual([tech]);
-    }
-    const secondary = engagement.ports.find((p) => p.host_id !== primary.id)!;
-    expect(secondary.scripts.filter((s) => s.source === "autorecon")).toEqual([]);
-    expect(secondary.commands).toEqual([]);
-  });
-
-  it("drops commands for an absent transport even when the port number exists", async () => {
-    const result = await importAutoRecon(await makeZipBuffer({
-      "scans/xml/_full_tcp_nmap.xml": makeNmapXml([{ port: 53, proto: "tcp", service: "domain" }]),
-      "scans/_manual_commands.txt": makeManualCommands([
-        { service: "domain", proto: "udp", port: 53, tools: [{ name: "udp-only", cmd: "dig @10.10.10.5 example.test" }] },
-      ]),
-    }), "missing-udp.zip");
-    expect(result.arCommands.size).toBe(0);
-    expect(result.scan.warnings.some((w) => w.includes("port 53/udp dropped"))).toBe(true);
-  });
-});
-
 let normalZip: ArrayBuffer;
 let noManualCommandsZip: ArrayBuffer;
 let nestedZip: ArrayBuffer;
@@ -454,5 +412,47 @@ describe("importAutoRecon (Phase 05, Plan 02)", () => {
         importAutoRecon(aggregateBombZip, "agg-bomb.zip"),
       ).rejects.toThrow(/200 MB|zip bomb/i);
     }, 60_000);
+  });
+});
+
+describe("TCP/UDP artifact ownership", () => {
+  it("persists files, commands, and derived fingerprints on their own transport", async () => {
+    const tcp = makeNmapXml([{ port: 53, proto: "tcp", service: "domain" }]);
+    const udp = makeNmapXml([{ port: 53, proto: "udp", service: "domain" }]);
+    const result = await importAutoRecon(await makeZipBuffer({
+      "scans/xml/_full_tcp_nmap.xml": tcp,
+      "scans/xml/_top_20_udp_nmap.xml": udp,
+      "scans/tcp53/tcp-evidence.txt": "TCP_ONLY WordPress",
+      "scans/udp53/udp-evidence.txt": "UDP_ONLY Drupal",
+      "scans/_manual_commands.txt": makeManualCommands([
+        { service: "domain", proto: "tcp", port: 53, tools: [{ name: "tcp-command", cmd: "dig +tcp @10.10.10.5 example.test" }] },
+        { service: "domain", proto: "udp", port: 53, tools: [{ name: "udp-command", cmd: "dig @10.10.10.5 example.test" }] },
+      ]),
+      "other/scans/xml/_full_tcp_nmap.xml": tcp.replaceAll("10.10.10.5", "10.10.10.6"),
+    }), "transports.zip");
+    const db = createTestDb();
+    const { id } = createFromScan(db, result.scan, "transports.zip", result);
+    const engagement = getById(db, id)!;
+    const primary = engagement.hosts.find((h) => h.is_primary)!;
+    for (const [protocol, marker, tech] of [["tcp", "TCP_ONLY WordPress", "wordpress"], ["udp", "UDP_ONLY Drupal", "drupal"]]) {
+      const port = engagement.ports.find((p) => p.host_id === primary.id && p.protocol === protocol)!;
+      expect(port.scripts.filter((s) => s.source === "autorecon").map((s) => s.output)).toEqual([marker]);
+      expect(port.commands.map((c) => c.label)).toEqual([`${protocol}-command`]);
+      expect(listForPort(db, port.id, "autorecon").map((f) => f.value)).toEqual([tech]);
+    }
+    const secondary = engagement.ports.find((p) => p.host_id !== primary.id)!;
+    expect(secondary.scripts.filter((s) => s.source === "autorecon")).toEqual([]);
+    expect(secondary.commands).toEqual([]);
+  });
+
+  it("drops commands for an absent transport even when the port number exists", async () => {
+    const result = await importAutoRecon(await makeZipBuffer({
+      "scans/xml/_full_tcp_nmap.xml": makeNmapXml([{ port: 53, proto: "tcp", service: "domain" }]),
+      "scans/_manual_commands.txt": makeManualCommands([
+        { service: "domain", proto: "udp", port: 53, tools: [{ name: "udp-only", cmd: "dig @10.10.10.5 example.test" }] },
+      ]),
+    }), "missing-udp.zip");
+    expect(result.arCommands.size).toBe(0);
+    expect(result.scan.warnings.some((w) => w.includes("port 53/udp dropped"))).toBe(true);
   });
 });
